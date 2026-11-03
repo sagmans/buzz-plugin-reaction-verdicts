@@ -2,7 +2,7 @@
   "id": "sagmans.reaction-verdicts",
   "name": "Reaction verdicts",
   "apiVersion": 1,
-  "description": "React 👍 approve, 👎 reject, ❓ clarify, 💾 save learnings or 🔍 verify on an agent's message to wake that agent with your verdict.",
+  "description": "React on an agent's message to send that agent your verdict: by default 👍 approve, 👎 reject, ❓ clarify, 💾 save learnings or 🔍 verify. Change the emoji and verdicts in Settings.",
   "discovery": {
     "category": "agent-tools",
     "tags": [
