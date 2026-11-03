@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# One entry point for this repository's own checks, so the git hooks and
+# contributors run exactly the same commands. The generic template checks in
+# .githooks/lib (secrets, commit messages, osv-scanner, lizard, vendored
+# semgrep rules) run on their own; these cover what is specific to a
+# plain-JavaScript Buzz plugin that is published as is, with no build step.
+#
+# Usage: scripts/check [STEP...]
+#   js             node --check on every JavaScript file; every JSON file parses
+#   shell          shellcheck and shfmt on this repository's own shell scripts
+#   markdown       markdownlint-cli2 with the hook template's strict config
+#   personal-data  no personal paths, tailnet names, tracker ids or keys
+#   dogfood        scripts/dogfood.mjs: the plugin with a fake Buzz host
+#   semgrep        semgrep with the p/javascript registry rules (network)
+#   trivy          trivy secret and misconfiguration scan (network)
+# Without a STEP it runs every offline step (js shell markdown personal-data dogfood).
+#
+# Files to judge are the ones git tracks in the index (GIT_INDEX_FILE is
+# honoured); their content is read below CHECK_ROOT (default: the repository
+# top). The pre-commit hook points CHECK_ROOT at a snapshot of the staged
+# index, so a partly staged file is judged by what will be committed.
+set -euo pipefail
+
+OFFLINE_STEPS=(js shell markdown personal-data dogfood)
+# Network scanners must not hang a push forever.
+SCAN_TIMEOUT_SECONDS=300
+SEMGREP_CONFIG=p/javascript
+TRIVY_SCANNERS=secret,misconfig
+MARKDOWN_CONFIG=.githooks/lib/markdownlint.jsonc
+DOGFOOD=scripts/dogfood.mjs
+PLUGIN_MODULE=plugin/plugin.js
+# The repository's own shell: hook checks and scripts. The generic template
+# files are linted where the template lives, and are never edited here.
+OWN_SHELL_GLOBS=('.githooks/*.d/*' 'scripts/check')
+# Optional shellcheck rules turned off, each a style choice that finds no bug:
+# SC2250: braces around every variable; the hook template does not use them.
+# SC2310: functions here return explicit statuses that every caller checks, so
+#         no step relies on set -e inside a function called in a condition.
+SHELLCHECK_EXCLUDES=(-e SC2250 -e SC2310)
+# Generic patterns only, never a real name: home directories, private agent
+# workspace paths, tailnet hosts, the private tracker, Nostr keys and 64-hex
+# public keys or ids. Each is written so that it does not match itself.
+PERSONAL_DATA_PATTERNS=(
+	'[/](Users|home)[/][A-Za-z0-9._-]+[/]'
+	'~[/][.]buzz([/]|$)'
+	'~[/]source[/]'
+	'[.]tail[0-9a-f]+[.]ts[.]net'
+	'(npub|nsec)1[02-9ac-hj-np-z]{20,}'
+	'(^|[^0-9a-f])[0-9a-f]{64}([^0-9a-f]|$)'
+)
+
+top=$(git rev-parse --show-toplevel)
+root=${CHECK_ROOT:-$top}
+# shellcheck source=SCRIPTDIR/../.githooks/lib/tools.sh
+. "$top/.githooks/lib/tools.sh"
+
+# tracked <glob>... -- print tracked paths that match a glob, one per line.
+# Callers capture the list before they loop, so a git failure stops the step
+# instead of looking like an empty repository (fail closed).
+tracked() {
+	git -C "$top" ls-files -- "$@"
+}
+
+need() {
+	if ! command -v "$1" >/dev/null 2>&1; then
+		echo >&2 "❌ check: $1 not found; $2"
+		return 1
+	fi
+}
+
+step_js() {
+	local path scripts data
+	need node 'install Node.js 20 or newer' || return 1
+	scripts=$(tracked '*.js' '*.mjs' '*.cjs') || return 1
+	data=$(tracked '*.json') || return 1
+	while IFS= read -r path; do
+		[[ -n $path ]] || continue
+		node --check "$root/$path" || {
+			echo >&2 "❌ js: $path does not parse"
+			return 1
+		}
+	done <<<"$scripts"
+	while IFS= read -r path; do
+		[[ -n $path ]] || continue
+		node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$root/$path" ||
+			{
+				echo >&2 "❌ js: $path is not valid JSON"
+				return 1
+			}
+	done <<<"$data"
+	echo "check js: ok"
+}
+
+step_shell() {
+	local files=() list path
+	need shellcheck 'install shellcheck (brew install shellcheck)' || return 1
+	need shfmt 'install shfmt (brew install shfmt)' || return 1
+	list=$(tracked "${OWN_SHELL_GLOBS[@]}") || return 1
+	while IFS= read -r path; do [[ -z $path ]] || files+=("$root/$path"); done <<<"$list"
+	[[ ${#files[@]} -gt 0 ]] || {
+		echo "check shell: nothing to check"
+		return 0
+	}
+	# -o all: every optional rule on; -x: follow the sourced hook helpers.
+	shellcheck -x -o all "${SHELLCHECK_EXCLUDES[@]}" "${files[@]}" ||
+		{
+			echo >&2 "❌ shell: shellcheck findings"
+			return 1
+		}
+	shfmt -d -s "${files[@]}" || {
+		echo >&2 "❌ shell: run shfmt -w -s on the files above"
+		return 1
+	}
+	echo "check shell: ok (${#files[@]} files)"
+}
+
+step_markdown() {
+	local files=() list path
+	need markdownlint-cli2 'install markdownlint-cli2 (brew install markdownlint-cli2)' || return 1
+	list=$(tracked '*.md') || return 1
+	while IFS= read -r path; do [[ -z $path ]] || files+=("$path"); done <<<"$list"
+	[[ ${#files[@]} -gt 0 ]] || return 0
+	(cd "$root" && markdownlint-cli2 --config "$top/$MARKDOWN_CONFIG" "${files[@]}") ||
+		{
+			echo >&2 "❌ markdown: findings (markdownlint-cli2 --fix <file>)"
+			return 1
+		}
+	echo "check markdown: ok (${#files[@]} files)"
+}
+
+step_personal_data() {
+	local args=() pattern found=0 path out rc list
+	list=$(tracked '*') || return 1
+	for pattern in "${PERSONAL_DATA_PATTERNS[@]}"; do args+=(-e "$pattern"); done
+	while IFS= read -r path; do
+		[[ -n $path ]] || continue
+		# -I skips binary files. grep exits 1 for no match; any other failure
+		# means the file was not scanned, which must block like a finding.
+		rc=0
+		out=$(grep -n -I -i -E "${args[@]}" -- "$root/$path") || rc=$?
+		case "$rc" in
+		0)
+			found=1
+			printf '%s\n' "$out" | sed "s#^#$path:#" >&2
+			;;
+		1) ;;
+		*)
+			echo >&2 "❌ personal-data: cannot scan $path (grep status $rc)"
+			return 1
+			;;
+		esac
+	done <<<"$list"
+	if [[ $found -ne 0 ]]; then
+		echo >&2 "❌ personal-data: replace the lines above with neutral examples (the user, example.ts.net)"
+		return 1
+	fi
+	echo "check personal-data: ok"
+}
+
+step_dogfood() {
+	need node 'install Node.js 20 or newer' || return 1
+	node "$root/$DOGFOOD" --plugin "$root/$PLUGIN_MODULE"
+}
+
+step_semgrep() {
+	local rc=0
+	need semgrep 'install semgrep (brew install semgrep)' || return 1
+	run_with_timeout "$SCAN_TIMEOUT_SECONDS" semgrep scan --config "$SEMGREP_CONFIG" \
+		--metrics=off --disable-version-check --error --quiet "$root" || rc=$?
+	[[ $rc -ne 124 ]] || echo >&2 "❌ semgrep: no result after ${SCAN_TIMEOUT_SECONDS}s"
+	[[ $rc -eq 0 ]] || {
+		echo >&2 "❌ semgrep: findings or scanner error (status $rc)"
+		return 1
+	}
+	echo "check semgrep: ok"
+}
+
+step_trivy() {
+	local rc=0
+	need trivy 'install trivy (brew install trivy)' || return 1
+	run_with_timeout "$SCAN_TIMEOUT_SECONDS" trivy fs --scanners "$TRIVY_SCANNERS" --exit-code 1 \
+		--quiet --skip-version-check --disable-telemetry "$root" || rc=$?
+	[[ $rc -ne 124 ]] || echo >&2 "❌ trivy: no result after ${SCAN_TIMEOUT_SECONDS}s"
+	[[ $rc -eq 0 ]] || {
+		echo >&2 "❌ trivy: findings or scanner error (status $rc)"
+		return 1
+	}
+	echo "check trivy: ok"
+}
+
+main() {
+	local steps=("$@") name
+	[[ ${#steps[@]} -gt 0 ]] || steps=("${OFFLINE_STEPS[@]}")
+	for name in "${steps[@]}"; do
+		case "$name" in
+		js | shell | markdown | personal-data | dogfood | semgrep | trivy) "step_${name//-/_}" ;;
+		*)
+			echo >&2 "❌ check: unknown step '$name' (see the usage at the top of scripts/check)"
+			return 2
+			;;
+		esac
+	done
+}
+
+main "$@"

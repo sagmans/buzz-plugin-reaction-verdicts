@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Every commit that leaves the machine must pass the repository checks, also
+# commits made with hooks off. The offline checks run on each pushed commit;
+# the network scanners (semgrep registry rules, trivy) run once on the tip,
+# because only the published state is installed by users.
+set -euo pipefail
+# shellcheck source=SCRIPTDIR/../lib/helpers.sh
+. "${HOOK_HELPERS:?run from .githooks (scripts/setup-hooks)}"
+
+TIP_STEPS=(semgrep trivy)
+
+# Exported by .githooks/pre-push with git's ref lines.
+: "${HOOK_STDIN_FILE:?run from .githooks/pre-push}"
+# for loop, not `| while`: a failure must exit this script (fail closed).
+shas=$(pushed_shas <"$HOOK_STDIN_FILE") || exit 1
+tip=""
+for sha in $shas; do
+	echo "pre-push: scripts/check on $sha"
+	at_sha "$sha" scripts/check || exit 1
+	tip=$sha
+done
+if [[ -n $tip ]]; then
+	echo "pre-push: scripts/check ${TIP_STEPS[*]} on $tip"
+	at_sha "$tip" scripts/check "${TIP_STEPS[@]}" || exit 1
+fi

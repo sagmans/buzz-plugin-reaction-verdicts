@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# The plugin ships as committed source with no build or CI, so every commit
+# must already hold code that parses, lints, keeps personal data out and
+# passes the fake-host dogfood run. The checks read a snapshot of the staged
+# index, so `commit -a`, `commit <paths>` and partly staged files are judged by
+# what the commit will hold, and the snapshot's own scripts/check runs, so a
+# change to the checks is judged by the checks it commits.
+set -euo pipefail
+# shellcheck source=SCRIPTDIR/../lib/helpers.sh
+. "${HOOK_HELPERS:?run from .githooks (scripts/setup-hooks)}"
+
+# Markdown is linted by the generic pre-commit check already.
+STEPS=(js shell personal-data dogfood)
+
+top=$(git rev-parse --show-toplevel)
+cd "$top"
+snapshot=$(mktemp -d "${TMPDIR:-/tmp}/rv-staged.XXXXXX")
+# Only the mktemp directory made above, never a computed parent.
+trap 'case "$snapshot" in */rv-staged.*) rm -rf -- "$snapshot" ;; esac' EXIT
+staged_git checkout-index --all --force --prefix="$snapshot/"
+if [[ ! -x "$snapshot/scripts/check" ]]; then
+	echo >&2 "❌ pre-commit: scripts/check is not staged as an executable file"
+	exit 1
+fi
+echo "pre-commit: scripts/check ${STEPS[*]} (staged snapshot)"
+GIT_INDEX_FILE=$PROJECT_HOOK_INDEX_FILE CHECK_ROOT=$snapshot "$snapshot/scripts/check" "${STEPS[@]}"
