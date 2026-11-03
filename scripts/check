@@ -51,8 +51,12 @@ PERSONAL_DATA_PATTERNS=(
 
 top=$(git rev-parse --show-toplevel)
 root=${CHECK_ROOT:-$top}
+# The checkout that holds this script owns the tool helpers and the lint
+# config. The pre-push hook runs this script in a worktree of an older
+# commit, which may not have them yet.
+checks_top=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # shellcheck source=SCRIPTDIR/../.githooks/lib/tools.sh
-. "$top/.githooks/lib/tools.sh"
+. "$checks_top/.githooks/lib/tools.sh"
 
 # tracked <glob>... -- print tracked paths that match a glob, one per line.
 # Callers capture the list before they loop, so a git failure stops the step
@@ -120,7 +124,7 @@ step_markdown() {
 	list=$(tracked '*.md') || return 1
 	while IFS= read -r path; do [[ -z $path ]] || files+=("$path"); done <<<"$list"
 	[[ ${#files[@]} -gt 0 ]] || return 0
-	(cd "$root" && markdownlint-cli2 --config "$top/$MARKDOWN_CONFIG" "${files[@]}") ||
+	(cd "$root" && markdownlint-cli2 --config "$checks_top/$MARKDOWN_CONFIG" "${files[@]}") ||
 		{
 			echo >&2 "❌ markdown: findings (markdownlint-cli2 --fix <file>)"
 			return 1
@@ -158,6 +162,16 @@ step_personal_data() {
 }
 
 step_dogfood() {
+	# Commits from before the dogfood run existed have nothing to run. The
+	# pre-push hook judges every pushed commit, those included.
+	[[ -f "$root/$DOGFOOD" ]] || {
+		echo "check dogfood: skipped, $DOGFOOD is not in this tree"
+		return 0
+	}
+	[[ -f "$root/$PLUGIN_MODULE" ]] || {
+		echo >&2 "❌ dogfood: $DOGFOOD exists but $PLUGIN_MODULE is missing"
+		return 1
+	}
 	need node 'install Node.js 20 or newer' || return 1
 	node "$root/$DOGFOOD" --plugin "$root/$PLUGIN_MODULE"
 }
