@@ -1,0 +1,5 @@
+# macOS folder metadata
+.DS_Store
+# Output of the dogfood transcript comparison in AGENTS.md
+/old.json
+/new.json
