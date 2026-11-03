@@ -12,7 +12,8 @@
 //   --transcript     print what the plugin posted and logged as JSON, so two
 //                    revisions can be compared with diff
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_PLUGIN = "plugin/plugin.js";
@@ -28,6 +29,10 @@ const SOLO = "solo-channel";
 const ROOT_ID = "5".repeat(64);
 // Rounds of the event loop to wait for the plugin's async relay read.
 const SETTLE_ROUNDS = 5;
+// Manifest rules from the Buzz plugin API v1 (docs/plugin-architecture.md).
+const MANIFEST_ID = /^[a-z][a-z0-9.-]{0,79}$/;
+const MAX_DESCRIPTION_BYTES = 280;
+const API_VERSION = 1;
 
 let nextId = 0;
 function eventId() {
@@ -369,6 +374,18 @@ async function settingsCardScenarios(run) {
   });
 }
 
+// The plugin needs no native access: a `host` block would let it run commands
+// or reach the network, so adding one must be a deliberate, reviewed change.
+function checkManifest(pluginPath) {
+  const manifest = JSON.parse(readFileSync(join(dirname(resolve(pluginPath)), "manifest.json"), "utf8"));
+  assert.match(manifest.id, MANIFEST_ID);
+  assert.equal(manifest.apiVersion, API_VERSION);
+  assert.ok(manifest.name?.trim(), "manifest name");
+  const bytes = Buffer.byteLength(manifest.description ?? "");
+  assert.ok(bytes >= 1 && bytes <= MAX_DESCRIPTION_BYTES, `description is ${bytes} bytes`);
+  assert.equal(manifest.host, undefined, "the plugin must not request host access");
+}
+
 function parseArgs(argv) {
   const options = { plugin: DEFAULT_PLUGIN, defaultsOnly: false, transcript: false };
   for (let i = 0; i < argv.length; i++) {
@@ -382,6 +399,7 @@ function parseArgs(argv) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  checkManifest(options.plugin);
   const transcript = [];
   let failures = 0;
   // Each scenario gets a fresh plugin, host and storage, so none leaks into another.
