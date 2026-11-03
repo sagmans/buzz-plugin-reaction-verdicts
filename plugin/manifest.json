@@ -1,0 +1,13 @@
+{
+  "id": "sagmans.reaction-verdicts",
+  "name": "Reaction verdicts",
+  "apiVersion": 1,
+  "description": "React 👍 approve, 👎 reject, ❓ clarify, 💾 save learnings or 🔍 verify on an agent's message to wake that agent with your verdict.",
+  "discovery": {
+    "category": "agent-tools",
+    "tags": [
+      "Approvals",
+      "Reactions"
+    ]
+  }
+}
