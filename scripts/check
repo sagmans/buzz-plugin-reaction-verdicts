@@ -57,6 +57,9 @@ root=${CHECK_ROOT:-$top}
 checks_top=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # shellcheck source=SCRIPTDIR/../.githooks/lib/tools.sh
 . "$checks_top/.githooks/lib/tools.sh"
+# run_with_timeout, which the network scanners below need, lives here.
+# shellcheck source=SCRIPTDIR/../.githooks/lib/helpers.sh
+. "$checks_top/.githooks/lib/helpers.sh"
 
 # tracked <glob>... -- print tracked paths that match a glob, one per line.
 # Callers capture the list before they loop, so a git failure stops the step
