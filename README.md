@@ -152,16 +152,16 @@ After you clone, turn on the git hooks once:
 scripts/setup-hooks
 ```
 
-The hooks need these tools on your `PATH`: `gitleaks`, `node` (20 or newer),
-`shellcheck`, `shfmt`, `markdownlint-cli2`, `semgrep`, `trivy`, `lizard`,
-`osv-scanner`, `actionlint` and `zizmor`. A missing tool blocks the commit or
-push that needs it. Every check must pass before you push. Never use
-`--no-verify`.
+Run `mise install` for the pinned tools in `mise.toml` (`node`, `biome`,
+`shfmt`, `markdownlint-cli2`, `lizard`), and keep `shellcheck`, `gitleaks`,
+`semgrep`, `trivy`, `osv-scanner`, `actionlint` and `zizmor` on your `PATH`.
+A missing tool blocks the commit or push that needs it. Every check must pass
+before you push. Never use `--no-verify`.
 
 Run the checks by hand:
 
 ```sh
-scripts/check                 # offline: js, shell, markdown, personal-data, dogfood
+scripts/check                 # offline: js, biome, shell, markdown, complexity, personal-data, dogfood
 scripts/check semgrep trivy   # network scanners
 node scripts/dogfood.mjs      # the plugin with a fake Buzz host
 ```

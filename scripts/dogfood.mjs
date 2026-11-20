@@ -45,7 +45,11 @@ function createFakeReact() {
   let hooks = [];
   let index = 0;
   const React = {
-    createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() }),
+    createElement: (type, props, ...children) => ({
+      type,
+      props: props ?? {},
+      children: children.flat(),
+    }),
     useState(initial) {
       const slot = hooks;
       const i = index++;
@@ -124,7 +128,11 @@ function createSession(generation, messages, posts, failPosts) {
 
 /** A running plugin with a fake host, plus helpers to play events into it. */
 async function startPlugin(pluginPath, storage) {
-  Object.defineProperty(globalThis, "localStorage", { value: storage, configurable: true, writable: true });
+  Object.defineProperty(globalThis, "localStorage", {
+    value: storage,
+    configurable: true,
+    writable: true,
+  });
   const plugin = await import(pathToFileURL(resolve(pluginPath)).href);
   const posts = [];
   const wakes = [];
@@ -134,7 +142,12 @@ async function startPlugin(pluginPath, storage) {
   const messages = new Map();
   const failPosts = { value: false };
   const relayListeners = new Set();
-  let snap = { status: "ready", generation: 1, viewer: OWNER, session: createSession(1, messages, posts, failPosts) };
+  let snap = {
+    status: "ready",
+    generation: 1,
+    viewer: OWNER,
+    session: createSession(1, messages, posts, failPosts),
+  };
   const agentsById = new Map([
     [AGENT, { key: `key-${AGENT_NAME}`, pubkey: AGENT, name: AGENT_NAME, owner: OWNER }],
     [OTHER_AGENT, { key: "key-other", pubkey: OTHER_AGENT, name: "Other", owner: STRANGER }],
@@ -155,7 +168,8 @@ async function startPlugin(pluginPath, storage) {
     },
     pages: { register: (page) => pages.push(page) },
     effect: (setup) => cleanups.push(setup()),
-    inject: (_deps, callback) => callback({ settingsCards: { register: (card) => cards.push(card) } }),
+    inject: (_deps, callback) =>
+      callback({ settingsCards: { register: (card) => cards.push(card) } }),
   };
   assert.deepEqual(plugin.inject, ["react", "pages", "relay", "agents"]);
   plugin.apply(ctx);
@@ -169,10 +183,16 @@ async function startPlugin(pluginPath, storage) {
     fake,
     session: () => snap.session,
     reconnect() {
-      snap = { ...snap, generation: snap.generation + 1, session: createSession(snap.generation + 1, messages, posts, failPosts) };
-      relayListeners.forEach((listener) => listener());
+      snap = {
+        ...snap,
+        generation: snap.generation + 1,
+        session: createSession(snap.generation + 1, messages, posts, failPosts),
+      };
+      for (const listener of relayListeners) listener();
     },
-    stop: () => cleanups.forEach((cleanup) => cleanup()),
+    stop() {
+      for (const cleanup of cleanups) cleanup();
+    },
     activityText: () => textOf(fake.mount(pages[0].component, {})()),
   };
 }
@@ -180,18 +200,34 @@ async function startPlugin(pluginPath, storage) {
 function agentMessage(running, { channel = STREAM, author = AGENT, threaded = true } = {}) {
   const tags = [["h", channel]];
   if (threaded) tags.push(["e", ROOT_ID, "", "root"], ["e", ROOT_ID, "", "reply"]);
-  const message = { id: eventId(), kind: 9, pubkey: author, content: "May I deploy the change?", tags };
+  const message = {
+    id: eventId(),
+    kind: 9,
+    pubkey: author,
+    content: "May I deploy the change?",
+    tags,
+  };
   running.messages.set(message.id, message);
   return message;
 }
 
-function reaction(target, content, { from = OWNER, channel = target.tags[0][1], mobile = false } = {}) {
-  const tags = mobile ? [["e", target.id]] : [["h", channel], ["e", target.id], ["p", target.pubkey]];
+function reaction(
+  target,
+  content,
+  { from = OWNER, channel = target.tags[0][1], mobile = false } = {},
+) {
+  const tags = mobile
+    ? [["e", target.id]]
+    : [
+        ["h", channel],
+        ["e", target.id],
+        ["p", target.pubkey],
+      ];
   return { id: eventId(), kind: 7, pubkey: from, content, tags };
 }
 
 async function play(running, events, { replay = false } = {}) {
-  running.session().live.forEach((listener) => listener({ replay, events }));
+  for (const listener of running.session().live) listener({ replay, events });
   for (let i = 0; i < SETTLE_ROUNDS; i++) await new Promise((done) => setImmediate(done));
 }
 
@@ -263,27 +299,30 @@ async function defaultDeliveryScenarios(run) {
 }
 
 async function defaultSkipScenarios(run) {
-  await run("skips: stranger, other emoji, other owner, channel mismatch, replay, duplicate", async (p) => {
-    const target = agentMessage(p);
-    await play(p, [reaction(target, "👍", { from: STRANGER })]);
-    await play(p, [reaction(target, "🎉")]);
-    await play(p, [reaction(agentMessage(p, { author: OTHER_AGENT }), "👍")]);
-    await play(p, [reaction(target, "👍", { channel: "another-channel" })]);
-    await play(p, [reaction(target, "👍")], { replay: true });
-    assert.equal(p.posts.length, 0);
-    const twice = reaction(target, "👍");
-    await play(p, [twice, twice]);
-    assert.equal(p.posts.length, 1);
-    const page = p.activityText();
-    for (const reason of [
-      "not the owner's reaction",
-      "not a verdict emoji",
-      "agent has another owner",
-      "reaction and target channels differ",
-    ])
-      assert.ok(page.includes(`skipped: ${reason}`), reason);
-    assert.ok(page.includes("👍 = APPROVED"));
-  });
+  await run(
+    "skips: stranger, other emoji, other owner, channel mismatch, replay, duplicate",
+    async (p) => {
+      const target = agentMessage(p);
+      await play(p, [reaction(target, "👍", { from: STRANGER })]);
+      await play(p, [reaction(target, "🎉")]);
+      await play(p, [reaction(agentMessage(p, { author: OTHER_AGENT }), "👍")]);
+      await play(p, [reaction(target, "👍", { channel: "another-channel" })]);
+      await play(p, [reaction(target, "👍")], { replay: true });
+      assert.equal(p.posts.length, 0);
+      const twice = reaction(target, "👍");
+      await play(p, [twice, twice]);
+      assert.equal(p.posts.length, 1);
+      const page = p.activityText();
+      for (const reason of [
+        "not the owner's reaction",
+        "not a verdict emoji",
+        "agent has another owner",
+        "reaction and target channels differ",
+      ])
+        assert.ok(page.includes(`skipped: ${reason}`), reason);
+      assert.ok(page.includes("👍 = APPROVED"));
+    },
+  );
   await run("reconnect listens on the new session; cleanup stops listening", async (p) => {
     const first = p.session();
     p.reconnect();
@@ -298,32 +337,52 @@ async function defaultSkipScenarios(run) {
 }
 
 async function savedMapScenarios(run) {
-  const custom = JSON.stringify({ version: 1, text: "# team map\n🚀 SHIP Ship the change now.\n👍\tLGTM" });
-  await run("saved custom map replaces the defaults", async (p) => {
-    const ship = agentMessage(p);
-    await play(p, [reaction(ship, "🚀")]);
-    expectReply(p, ship, "SHIP");
-    const lgtm = agentMessage(p);
-    await play(p, [reaction(lgtm, "👍🏻")]);
-    expectReply(p, lgtm, "LGTM");
-    await play(p, [reaction(agentMessage(p), "👎")]);
-    assert.equal(p.posts.length, 2);
-    assert.ok(p.activityText().includes("🚀 = SHIP, 👍 = LGTM"));
-    p.failPosts.value = true;
-    await play(p, [reaction(agentMessage(p), "🚀"), reaction(agentMessage(p), "👍")]);
-    assert.ok(p.wakes[0].text.startsWith("OWNER VERDICT: SHIP. Ship the change now. The owner"));
-    assert.ok(p.wakes[1].text.startsWith("OWNER VERDICT: LGTM. The owner gave the verdict LGTM on that message."));
-  }, { [STORAGE_KEY]: custom });
-  await run("corrupt saved map fails closed: no reaction counts", async (p) => {
-    await play(p, [reaction(agentMessage(p), "👍")]);
-    assert.equal(p.posts.length, 0);
-    assert.ok(p.activityText().includes("skipped: the verdict map in Settings is invalid"));
-  }, { [STORAGE_KEY]: "{not json" });
-  await run("unreadable storage keeps the defaults", async (p) => {
-    const target = agentMessage(p);
-    await play(p, [reaction(target, "👍")]);
-    expectReply(p, target, "APPROVED");
-  }, {}, { failRead: true });
+  const custom = JSON.stringify({
+    version: 1,
+    text: "# team map\n🚀 SHIP Ship the change now.\n👍\tLGTM",
+  });
+  await run(
+    "saved custom map replaces the defaults",
+    async (p) => {
+      const ship = agentMessage(p);
+      await play(p, [reaction(ship, "🚀")]);
+      expectReply(p, ship, "SHIP");
+      const lgtm = agentMessage(p);
+      await play(p, [reaction(lgtm, "👍🏻")]);
+      expectReply(p, lgtm, "LGTM");
+      await play(p, [reaction(agentMessage(p), "👎")]);
+      assert.equal(p.posts.length, 2);
+      assert.ok(p.activityText().includes("🚀 = SHIP, 👍 = LGTM"));
+      p.failPosts.value = true;
+      await play(p, [reaction(agentMessage(p), "🚀"), reaction(agentMessage(p), "👍")]);
+      assert.ok(p.wakes[0].text.startsWith("OWNER VERDICT: SHIP. Ship the change now. The owner"));
+      assert.ok(
+        p.wakes[1].text.startsWith(
+          "OWNER VERDICT: LGTM. The owner gave the verdict LGTM on that message.",
+        ),
+      );
+    },
+    { [STORAGE_KEY]: custom },
+  );
+  await run(
+    "corrupt saved map fails closed: no reaction counts",
+    async (p) => {
+      await play(p, [reaction(agentMessage(p), "👍")]);
+      assert.equal(p.posts.length, 0);
+      assert.ok(p.activityText().includes("skipped: the verdict map in Settings is invalid"));
+    },
+    { [STORAGE_KEY]: "{not json" },
+  );
+  await run(
+    "unreadable storage keeps the defaults",
+    async (p) => {
+      const target = agentMessage(p);
+      await play(p, [reaction(target, "👍")]);
+      expectReply(p, target, "APPROVED");
+    },
+    {},
+    { failRead: true },
+  );
 }
 
 function cardControls(render) {
@@ -344,12 +403,14 @@ async function settingsCardScenarios(run) {
     let isActive = true;
     const render = p.fake.mount(p.cards[0].component, { active: () => isActive });
     const submit = () => cardControls(render).form.props.onSubmit({ preventDefault() {} });
-    assert.ok(cardControls(render).textarea.props.value.startsWith("👍 APPROVED The owner approves"));
+    assert.ok(
+      cardControls(render).textarea.props.value.startsWith("👍 APPROVED The owner approves"),
+    );
     cardControls(render).textarea.props.onChange({ target: { value: "👍 approved" } });
     assert.ok(cardControls(render).text.includes("Line 1: write the verdict after the reaction"));
     submit();
     assert.equal(storage.data.has(STORAGE_KEY), false);
-    for (const bad of ["👍 OK\n👍🏽 NO", "👍 OK\u0007", "x".repeat(40) + " OK"]) {
+    for (const bad of ["👍 OK\n👍🏽 NO", "👍 OK\u0007", `${"x".repeat(40)} OK`]) {
       cardControls(render).textarea.props.onChange({ target: { value: bad } });
       submit();
       assert.equal(storage.data.has(STORAGE_KEY), false, bad);
@@ -360,7 +421,10 @@ async function settingsCardScenarios(run) {
     assert.equal(storage.data.has(STORAGE_KEY), false);
     isActive = true;
     submit();
-    assert.deepEqual(JSON.parse(storage.data.get(STORAGE_KEY)), { version: 1, text: "✅ DONE Done, close it." });
+    assert.deepEqual(JSON.parse(storage.data.get(STORAGE_KEY)), {
+      version: 1,
+      text: "✅ DONE Done, close it.",
+    });
     assert.ok(cardControls(render).text.includes("Saved."));
     const done = agentMessage(p);
     await play(p, [reaction(done, "✅"), reaction(agentMessage(p), "👍")]);
@@ -377,7 +441,9 @@ async function settingsCardScenarios(run) {
 // The plugin needs no native access: a `host` block would let it run commands
 // or reach the network, so adding one must be a deliberate, reviewed change.
 function checkManifest(pluginPath) {
-  const manifest = JSON.parse(readFileSync(join(dirname(resolve(pluginPath)), "manifest.json"), "utf8"));
+  const manifest = JSON.parse(
+    readFileSync(join(dirname(resolve(pluginPath)), "manifest.json"), "utf8"),
+  );
   assert.match(manifest.id, MANIFEST_ID);
   assert.equal(manifest.apiVersion, API_VERSION);
   assert.ok(manifest.name?.trim(), "manifest name");

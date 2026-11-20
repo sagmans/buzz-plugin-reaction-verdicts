@@ -7,13 +7,15 @@
 #
 # Usage: scripts/check [STEP...]
 #   js             node --check on every JavaScript file; every JSON file parses
+#   biome          biome lint and format on JavaScript and JSON at the mise.toml pin
 #   shell          shellcheck and shfmt on this repository's own shell scripts
 #   markdown       markdownlint-cli2 with the hook template's strict config
+#   complexity     lizard CCN and length check across every JavaScript file
 #   personal-data  no personal paths, tailnet names, tracker ids or keys
 #   dogfood        scripts/dogfood.mjs: the plugin with a fake Buzz host
 #   semgrep        semgrep with the p/javascript registry rules (network)
 #   trivy          trivy secret and misconfiguration scan (network)
-# Without a STEP it runs every offline step (js shell markdown personal-data dogfood).
+# Without a STEP it runs every offline step (js biome shell markdown complexity personal-data dogfood).
 #
 # Files to judge are the ones git tracks in the index (GIT_INDEX_FILE is
 # honoured); their content is read below CHECK_ROOT (default: the repository
@@ -21,12 +23,35 @@
 # index, so a partly staged file is judged by what will be committed.
 set -euo pipefail
 
-OFFLINE_STEPS=(js shell markdown personal-data dogfood)
+CHECK=check
+OFFLINE_STEPS=(js biome shell markdown complexity personal-data dogfood)
 # Network scanners must not hang a push forever.
 SCAN_TIMEOUT_SECONDS=300
 SEMGREP_CONFIG=p/javascript
 TRIVY_SCANNERS=secret,misconfig
 MARKDOWN_CONFIG=.githooks/lib/markdownlint.jsonc
+BIOME_CONFIG=biome.json
+MISE_CONFIG=mise.toml
+# Shared hook template files (.githooks/<hook> and .githooks/lib/*) are owned
+# by the template repository; repo-owned .githooks/*.d/* still runs checks.
+TEMPLATE_HOOK_RE='^\.githooks/lib/|^\.githooks/[^/]+$'
+# Patterns for reading the pinned Biome version from mise.toml and CLI output.
+MISE_SECTION_RE='^[[:space:]]*\[([^]]+)\][[:space:]]*$'
+MISE_BIOME_PIN_RE='^[[:space:]]*biome[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)"[[:space:]]*$'
+BIOME_VERSION_RE='Version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)'
+# Complexity limits match the generic changed-function check, applied across
+# every file so old functions cannot drift past them unnoticed.
+LIZARD_MAX_CCN=15
+LIZARD_MAX_LENGTH=100
+# Security floor: carries the November 2026 Node.js CVE fixes.
+NODE_MIN_VERSION=24.22.3
+# Minimum versions: the releases these flags and rule sets were verified with.
+SHELLCHECK_MIN_VERSION=0.10.0
+SHFMT_MIN_VERSION=3.8.0
+MARKDOWNLINT_MIN_VERSION=0.23.2
+LIZARD_MIN_VERSION=1.24.1
+SEMGREP_MIN_VERSION=1.182.0
+TRIVY_MIN_VERSION=0.60.0
 DOGFOOD=scripts/dogfood.mjs
 PLUGIN_MODULE=plugin/plugin.js
 # The repository's own shell: hook checks and scripts. The generic template
@@ -50,7 +75,8 @@ PERSONAL_DATA_PATTERNS=(
 )
 
 top=$(git rev-parse --show-toplevel)
-root=${CHECK_ROOT:-$top}
+top=$(cd "$top" && pwd -P)
+root=$(cd "${CHECK_ROOT:-$top}" && pwd -P)
 # The checkout that holds this script owns the tool helpers and the lint
 # config. The pre-push hook runs this script in a worktree of an older
 # commit, which may not have them yet.
@@ -61,6 +87,34 @@ checks_top=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # shellcheck source=SCRIPTDIR/../.githooks/lib/helpers.sh
 . "$checks_top/.githooks/lib/helpers.sh"
 
+# Resolve pinned CLI tools directly from the trusted checkout's mise.toml
+# before shims or ambient PATH, and ignore any untrusted mise.toml inside a
+# temporary staged snapshot or commit worktree.
+use_mise_tools() {
+	local mise_dir=$1 checked_dir=$2 bins dir prefix=""
+	if [[ $checked_dir != "$mise_dir" ]]; then
+		MISE_IGNORED_CONFIG_PATHS="${MISE_IGNORED_CONFIG_PATHS:+$MISE_IGNORED_CONFIG_PATHS:}$checked_dir"
+		export MISE_IGNORED_CONFIG_PATHS
+	fi
+	command -v mise >/dev/null 2>&1 || return 0
+	[[ ! -L "$mise_dir/$MISE_CONFIG" && -f "$mise_dir/$MISE_CONFIG" ]] || return 0
+	bins=$(MISE_OFFLINE=1 mise -C "$mise_dir" bin-paths </dev/null 2>/dev/null || true)
+	[[ -n $bins ]] || return 0
+	while IFS= read -r dir; do
+		[[ -n $dir ]] || continue
+		prefix="${prefix:+$prefix:}$dir"
+	done <<<"$bins"
+	[[ -z $prefix ]] || PATH="$prefix:$PATH"
+	export PATH
+}
+# Pre-commit runs against a staged snapshot ($CHECK_ROOT) from the working tree
+# ($top); pre-push runs from the trusted checkout ($checks_top).
+if [[ -n ${CHECK_ROOT:-} ]]; then
+	use_mise_tools "$top" "$root"
+else
+	use_mise_tools "$checks_top" "$root"
+fi
+
 # tracked <glob>... -- print tracked paths that match a glob, one per line.
 # Callers capture the list before they loop, so a git failure stops the step
 # instead of looking like an empty repository (fail closed).
@@ -68,16 +122,31 @@ tracked() {
 	git -C "$top" ls-files -- "$@"
 }
 
-need() {
-	if ! command -v "$1" >/dev/null 2>&1; then
-		echo >&2 "❌ check: $1 not found; $2"
-		return 1
-	fi
+# Exact Biome version pinned under [tools] in mise.toml, so an outdated
+# install or a weakened pin in a staged commit fails closed.
+biome_pinned_version() {
+	local file=$1 line in_tools=0
+	while IFS= read -r line || [[ -n $line ]]; do
+		line=${line%%#*}
+		if [[ $line =~ $MISE_SECTION_RE ]]; then
+			if [[ ${BASH_REMATCH[1]} == tools ]]; then
+				in_tools=1
+			else
+				in_tools=0
+			fi
+			continue
+		fi
+		if [[ $in_tools -eq 1 && $line =~ $MISE_BIOME_PIN_RE ]]; then
+			printf '%s\n' "${BASH_REMATCH[1]}"
+			return 0
+		fi
+	done <"$file"
+	return 1
 }
 
 step_js() {
 	local path scripts data
-	need node 'install Node.js 20 or newer' || return 1
+	require_tool "$CHECK" node "$NODE_MIN_VERSION" 'install Node.js (mise install, see mise.toml)' node --version || return 1
 	scripts=$(tracked '*.js' '*.mjs' '*.cjs') || return 1
 	data=$(tracked '*.json') || return 1
 	while IFS= read -r path; do
@@ -98,10 +167,68 @@ step_js() {
 	echo "check js: ok"
 }
 
+# Keep JS and JSON formatting and lint aligned with biome.json, using only
+# the exact Biome version pinned in mise.toml so local hooks never drift.
+step_biome() {
+	local files=() list path config_root config_file pin_file pinned biome_bin out version
+	list=$(tracked '*.js' '*.mjs' '*.cjs' '*.json') || return 1
+	while IFS= read -r path; do
+		[[ -n $path ]] || continue
+		[[ $path =~ $TEMPLATE_HOOK_RE ]] && continue
+		files+=("$path")
+	done <<<"$list"
+	[[ ${#files[@]} -gt 0 ]] || {
+		echo "check biome: nothing to check"
+		return 0
+	}
+	# Pre-commit sets CHECK_ROOT to the staged snapshot so a broken biome.json
+	# or mise.toml pin cannot be committed; pre-push judges every commit in the
+	# range against the trusted checkout's active config and pin.
+	if [[ -n ${CHECK_ROOT:-} ]]; then
+		config_root=$root
+	else
+		config_root=$checks_top
+	fi
+	config_file=$config_root/$BIOME_CONFIG
+	pin_file=$config_root/$MISE_CONFIG
+	if [[ -L $config_file || ! -f $config_file ]]; then
+		echo >&2 "❌ biome: $BIOME_CONFIG is missing or a symlink at $config_file"
+		return 1
+	fi
+	if [[ -L $pin_file || ! -f $pin_file ]]; then
+		echo >&2 "❌ biome: $MISE_CONFIG is missing or a symlink at $pin_file"
+		return 1
+	fi
+	pinned=$(biome_pinned_version "$pin_file") || {
+		echo >&2 "❌ biome: pin an exact biome = \"X.Y.Z\" version under [tools] in $MISE_CONFIG"
+		return 1
+	}
+	biome_bin=$(command -v biome 2>/dev/null || true)
+	if [[ -z $biome_bin ]]; then
+		echo >&2 "❌ biome: biome $pinned not found; run: mise install"
+		return 1
+	fi
+	out=$("$biome_bin" --version 2>/dev/null || true)
+	if ! [[ $out =~ $BIOME_VERSION_RE ]]; then
+		echo >&2 "❌ biome: cannot read the biome version from '$biome_bin --version'"
+		return 1
+	fi
+	version=${BASH_REMATCH[1]}
+	if [[ $version != "$pinned" ]]; then
+		echo >&2 "❌ biome: biome $version does not match $MISE_CONFIG pin $pinned; run: mise install"
+		return 1
+	fi
+	(cd "$root" && "$biome_bin" check --config-path="$config_file" --error-on-warnings -- "${files[@]}") || {
+		echo >&2 "❌ biome: lint or format findings (mise exec -- biome check --write .)"
+		return 1
+	}
+	echo "check biome: ok (${#files[@]} files)"
+}
+
 step_shell() {
 	local files=() list path
-	need shellcheck 'install shellcheck (brew install shellcheck)' || return 1
-	need shfmt 'install shfmt (brew install shfmt)' || return 1
+	require_tool "$CHECK" shellcheck "$SHELLCHECK_MIN_VERSION" 'install shellcheck (brew install shellcheck)' shellcheck --version || return 1
+	require_tool "$CHECK" shfmt "$SHFMT_MIN_VERSION" 'install shfmt (mise install, see mise.toml)' shfmt --version || return 1
 	list=$(tracked "${OWN_SHELL_GLOBS[@]}") || return 1
 	while IFS= read -r path; do [[ -z $path ]] || files+=("$root/$path"); done <<<"$list"
 	[[ ${#files[@]} -gt 0 ]] || {
@@ -123,7 +250,7 @@ step_shell() {
 
 step_markdown() {
 	local files=() list path
-	need markdownlint-cli2 'install markdownlint-cli2 (brew install markdownlint-cli2)' || return 1
+	require_tool "$CHECK" markdownlint-cli2 "$MARKDOWNLINT_MIN_VERSION" 'install markdownlint-cli2 (mise install, see mise.toml)' markdownlint-cli2 --help || return 1
 	list=$(tracked '*.md') || return 1
 	while IFS= read -r path; do [[ -z $path ]] || files+=("$path"); done <<<"$list"
 	[[ ${#files[@]} -gt 0 ]] || return 0
@@ -133,6 +260,27 @@ step_markdown() {
 			return 1
 		}
 	echo "check markdown: ok (${#files[@]} files)"
+}
+
+step_complexity() {
+	local files=() list path
+	require_tool "$CHECK" lizard "$LIZARD_MIN_VERSION" 'install lizard (mise install, see mise.toml)' lizard --version || return 1
+	list=$(tracked '*.js' '*.mjs' '*.cjs') || return 1
+	while IFS= read -r path; do
+		[[ -n $path ]] || continue
+		[[ $path =~ $TEMPLATE_HOOK_RE ]] && continue
+		if [[ ! -f "$root/$path" ]]; then
+			echo >&2 "❌ complexity: missing file $path"
+			return 1
+		fi
+		files+=("$root/$path")
+	done <<<"$list"
+	[[ ${#files[@]} -gt 0 ]] || return 0
+	lizard --CCN "$LIZARD_MAX_CCN" --length "$LIZARD_MAX_LENGTH" --warnings_only "${files[@]}" || {
+		echo >&2 "❌ complexity: a function is above CCN $LIZARD_MAX_CCN or $LIZARD_MAX_LENGTH lines"
+		return 1
+	}
+	echo "check complexity: ok (${#files[@]} files)"
 }
 
 step_personal_data() {
@@ -175,13 +323,13 @@ step_dogfood() {
 		echo >&2 "❌ dogfood: $DOGFOOD exists but $PLUGIN_MODULE is missing"
 		return 1
 	}
-	need node 'install Node.js 20 or newer' || return 1
+	require_tool "$CHECK" node "$NODE_MIN_VERSION" 'install Node.js (mise install, see mise.toml)' node --version || return 1
 	node "$root/$DOGFOOD" --plugin "$root/$PLUGIN_MODULE"
 }
 
 step_semgrep() {
 	local rc=0
-	need semgrep 'install semgrep (brew install semgrep)' || return 1
+	require_tool "$CHECK" semgrep "$SEMGREP_MIN_VERSION" 'install semgrep (brew install semgrep)' semgrep --version || return 1
 	run_with_timeout "$SCAN_TIMEOUT_SECONDS" semgrep scan --config "$SEMGREP_CONFIG" \
 		--metrics=off --disable-version-check --error --quiet "$root" || rc=$?
 	[[ $rc -ne 124 ]] || echo >&2 "❌ semgrep: no result after ${SCAN_TIMEOUT_SECONDS}s"
@@ -194,7 +342,7 @@ step_semgrep() {
 
 step_trivy() {
 	local rc=0
-	need trivy 'install trivy (brew install trivy)' || return 1
+	require_tool "$CHECK" trivy "$TRIVY_MIN_VERSION" 'install trivy (brew install trivy)' trivy --version || return 1
 	run_with_timeout "$SCAN_TIMEOUT_SECONDS" trivy fs --scanners "$TRIVY_SCANNERS" --exit-code 1 \
 		--quiet --skip-version-check --disable-telemetry "$root" || rc=$?
 	[[ $rc -ne 124 ]] || echo >&2 "❌ trivy: no result after ${SCAN_TIMEOUT_SECONDS}s"
@@ -210,7 +358,7 @@ main() {
 	[[ ${#steps[@]} -gt 0 ]] || steps=("${OFFLINE_STEPS[@]}")
 	for name in "${steps[@]}"; do
 		case "$name" in
-		js | shell | markdown | personal-data | dogfood | semgrep | trivy) "step_${name//-/_}" ;;
+		js | biome | shell | markdown | complexity | personal-data | dogfood | semgrep | trivy) "step_${name//-/_}" ;;
 		*)
 			echo >&2 "❌ check: unknown step '$name' (see the usage at the top of scripts/check)"
 			return 2

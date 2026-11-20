@@ -88,7 +88,9 @@ class VerdictSettingsError extends Error {
 /** The judged message could not be read from the relay in time. */
 class TargetReadError extends Error {
   constructor(targetId, elapsedMs, cause) {
-    super(`target ${targetId} not read after ${elapsedMs} ms (limit ${READ_TIMEOUT_MS} ms)`, { cause });
+    super(`target ${targetId} not read after ${elapsedMs} ms (limit ${READ_TIMEOUT_MS} ms)`, {
+      cause,
+    });
     this.name = "TargetReadError";
     this.targetId = targetId;
   }
@@ -113,9 +115,14 @@ function parseRule(raw, line) {
   if (!reaction || reaction.length > MAX_REACTION_CHARS)
     throw new VerdictSettingsError(`a reaction is 1 to ${MAX_REACTION_CHARS} characters`, { line });
   if (!VERDICT_NAME.test(verdict))
-    throw new VerdictSettingsError("write the verdict after the reaction, in capitals (A-Z, 0-9, _)", { line });
+    throw new VerdictSettingsError(
+      "write the verdict after the reaction, in capitals (A-Z, 0-9, _)",
+      { line },
+    );
   if (meaning.length > MAX_MEANING_CHARS)
-    throw new VerdictSettingsError(`a meaning is at most ${MAX_MEANING_CHARS} characters`, { line });
+    throw new VerdictSettingsError(`a meaning is at most ${MAX_MEANING_CHARS} characters`, {
+      line,
+    });
   return { reaction, verdict, meaning };
 }
 
@@ -134,15 +141,18 @@ function parseVerdictMap(text) {
       const trimmed = raw.trim();
       if (!trimmed || trimmed.startsWith(COMMENT_PREFIX)) return;
       const line = index + 1;
-      if (CONTROL_CHARS.test(trimmed)) throw new VerdictSettingsError("remove control characters", { line });
+      if (CONTROL_CHARS.test(trimmed))
+        throw new VerdictSettingsError("remove control characters", { line });
       const rule = parseRule(trimmed, line);
       if (verdicts.has(rule.reaction))
         throw new VerdictSettingsError(`${rule.reaction} already has a verdict`, { line });
-      if (verdicts.size >= MAX_RULES) throw new VerdictSettingsError(`use at most ${MAX_RULES} rules`, { line });
+      if (verdicts.size >= MAX_RULES)
+        throw new VerdictSettingsError(`use at most ${MAX_RULES} rules`, { line });
       verdicts.set(rule.reaction, rule.verdict);
       if (rule.meaning && !meanings.has(rule.verdict)) meanings.set(rule.verdict, rule.meaning);
     });
-    if (verdicts.size === 0) throw new VerdictSettingsError("add at least one rule, or reset to the defaults");
+    if (verdicts.size === 0)
+      throw new VerdictSettingsError("add at least one rule, or reset to the defaults");
     return Object.freeze({ text, verdicts, meanings });
   } catch (error) {
     if (error instanceof VerdictSettingsError) return Object.freeze({ text, error: error.message });
@@ -169,7 +179,10 @@ function loadVerdictMap(storage) {
   try {
     raw = storage?.getItem(STORAGE_KEY) ?? null;
   } catch (error) {
-    console.warn(`${LOG_PREFIX} verdict map not read; defaults in use`, { key: STORAGE_KEY, error });
+    console.warn(`${LOG_PREFIX} verdict map not read; defaults in use`, {
+      key: STORAGE_KEY,
+      error,
+    });
     return { ...DEFAULT_MAP, source: "default" };
   }
   if (raw === null) return { ...DEFAULT_MAP, source: "default" };
@@ -180,7 +193,11 @@ function loadVerdictMap(storage) {
     return { text: "", error: "the saved map is not valid JSON", source: "saved" };
   }
   if (saved?.version !== STORAGE_VERSION)
-    return { text: "", error: `the saved map has an unknown format (${String(saved?.version)})`, source: "saved" };
+    return {
+      text: "",
+      error: `the saved map has an unknown format (${String(saved?.version)})`,
+      source: "saved",
+    };
   return { ...parseVerdictMap(saved.text), source: "saved" };
 }
 
@@ -190,7 +207,7 @@ function createVerdictStore(storage) {
   const listeners = new Set();
   function publish(next) {
     state = Object.freeze(next);
-    listeners.forEach((listener) => listener());
+    for (const listener of listeners) listener();
   }
   return {
     snapshot: () => state,
@@ -201,7 +218,8 @@ function createVerdictStore(storage) {
     save(text) {
       const parsed = parseVerdictMap(text);
       if (parsed.error) throw new VerdictSettingsError(parsed.error);
-      if (!storage) throw new VerdictSettingsError("this app has no local storage, so the map cannot be saved");
+      if (!storage)
+        throw new VerdictSettingsError("this app has no local storage, so the map cannot be saved");
       try {
         storage.setItem(STORAGE_KEY, JSON.stringify({ version: STORAGE_VERSION, text }));
       } catch (cause) {
@@ -213,7 +231,9 @@ function createVerdictStore(storage) {
       try {
         storage?.removeItem(STORAGE_KEY);
       } catch (cause) {
-        throw new VerdictSettingsError("the saved map could not be removed from local storage", { cause });
+        throw new VerdictSettingsError("the saved map could not be removed from local storage", {
+          cause,
+        });
       }
       publish({ ...DEFAULT_MAP, source: "default" });
     },
@@ -232,7 +252,7 @@ function createActivityLog() {
     },
     record(entry) {
       rows = Object.freeze([{ at: Date.now(), ...entry }, ...rows].slice(0, MAX_LOG));
-      listeners.forEach((listener) => listener());
+      for (const listener of listeners) listener();
     },
   };
 }
@@ -310,7 +330,8 @@ async function checkTarget({ snap, agents, signal }, { targetId, reactionChannel
   // The target's own signed h tag names the conversation; a reaction that names another one is refused.
   const channel = tagValue(target, "h", false);
   if (!channel) return { skip: "target has no channel" };
-  if (reactionChannel && reactionChannel !== channel) return { skip: "reaction and target channels differ" };
+  if (reactionChannel && reactionChannel !== channel)
+    return { skip: "reaction and target channels differ" };
   const agent = agents.find(target.pubkey);
   // Not an agent, or an agent of another owner: not ours to wake.
   if (!agent) return { skip: "target author is not an agent" };
@@ -329,15 +350,31 @@ function deliver({ snap, reaction, agents, record }, { verdict, meaning, target,
   // stays one word. A solo chat has no threads, so there the text names the message.
   try {
     if (root) {
-      snap.session.messages.reply(channel, root, `@${agent.name} ${verdict}`, [agent.pubkey], [], target.id);
+      snap.session.messages.reply(
+        channel,
+        root,
+        `@${agent.name} ${verdict}`,
+        [agent.pubkey],
+        [],
+        target.id,
+      );
     } else {
-      snap.session.messages.send(channel, `@${agent.name} ${verdict} for your message ${target.id}`, [agent.pubkey]);
+      snap.session.messages.send(
+        channel,
+        `@${agent.name} ${verdict} for your message ${target.id}`,
+        [agent.pubkey],
+      );
     }
     record({ ...row, status: "sent as your message" });
     return;
   } catch (error) {
     // For example the agent left the channel, so a mention is refused. Fall back to a direct wake.
-    console.warn(`${LOG_PREFIX} verdict message not sent`, { agent: agent.pubkey, reaction: reaction.id, channel, error });
+    console.warn(`${LOG_PREFIX} verdict message not sent`, {
+      agent: agent.pubkey,
+      reaction: reaction.id,
+      channel,
+      error,
+    });
     record({ ...row, status: `message not sent: ${errorText(error)}` });
   }
   const text =
@@ -350,7 +387,12 @@ function deliver({ snap, reaction, agents, record }, { verdict, meaning, target,
     record({ ...row, status: "woken (fallback)" });
   } catch (error) {
     // Throws when this app does not run the agent, or its queue is full.
-    console.warn(`${LOG_PREFIX} wake failed`, { agent: agent.pubkey, reaction: reaction.id, channel, error });
+    console.warn(`${LOG_PREFIX} wake failed`, {
+      agent: agent.pubkey,
+      reaction: reaction.id,
+      channel,
+      error,
+    });
     record({ ...row, status: `not woken: ${errorText(error)}` });
   }
 }
@@ -363,7 +405,12 @@ async function handleReaction(deps, snap, reaction, signal) {
   const located = checked.skip ? checked : await checkTarget(context, checked);
   // Each skip of a reaction is logged, so the owner can see why no agent woke.
   if (located.skip) {
-    deps.record({ agent: NONE, verdict: reaction.content, message: reaction.id, status: `skipped: ${located.skip}` });
+    deps.record({
+      agent: NONE,
+      verdict: reaction.content,
+      message: reaction.id,
+      status: `skipped: ${located.skip}`,
+    });
     return;
   }
   const meaning = map.meanings.get(checked.verdict) ?? fallbackMeaning(checked.verdict);
@@ -381,7 +428,12 @@ function followRelay(relay, deps) {
     stopLive?.();
     controller?.abort();
     current = snap.session;
-    deps.record({ agent: NONE, verdict: NONE, message: NONE, status: `listening (generation ${snap.generation})` });
+    deps.record({
+      agent: NONE,
+      verdict: NONE,
+      message: NONE,
+      status: `listening (generation ${snap.generation})`,
+    });
     controller = new AbortController();
     const signal = controller.signal;
     // Live events only, never replays: an old reaction must not wake an agent again.
@@ -390,14 +442,28 @@ function followRelay(relay, deps) {
       for (const event of batch.events) {
         handleReaction(deps, snap, event, signal).catch((error) => {
           if (signal.aborted) return;
-          console.warn(`${LOG_PREFIX} reaction not handled`, { reaction: event.id, error, cause: error?.cause });
-          deps.record({ agent: UNKNOWN, verdict: UNKNOWN, message: event.id, status: `error: ${errorText(error)}` });
+          console.warn(`${LOG_PREFIX} reaction not handled`, {
+            reaction: event.id,
+            error,
+            cause: error?.cause,
+          });
+          deps.record({
+            agent: UNKNOWN,
+            verdict: UNKNOWN,
+            message: event.id,
+            status: `error: ${errorText(error)}`,
+          });
         });
       }
     });
   }
   attach();
-  deps.record({ agent: NONE, verdict: NONE, message: NONE, status: `started; relay ${relay.snapshot().status}` });
+  deps.record({
+    agent: NONE,
+    verdict: NONE,
+    message: NONE,
+    status: `started; relay ${relay.snapshot().status}`,
+  });
   const stopRelay = relay.subscribe(attach);
   return () => {
     stopRelay();
@@ -420,7 +486,11 @@ function createActivityPage(React, log, store) {
       "section",
       { className: "ui-card", style: { padding: "var(--space-panel-inset)", overflow: "auto" } },
       h("h1", null, "Reaction verdicts"),
-      h("p", null, `${mapSummary(map)}. Only your reactions on your agents' messages count. Log resets on restart.`),
+      h(
+        "p",
+        null,
+        `${mapSummary(map)}. Only your reactions on your agents' messages count. Log resets on restart.`,
+      ),
       rows.length === 0
         ? h("p", null, "No verdicts since start.")
         : h(
@@ -457,16 +527,25 @@ function createSettingsCard(React, store) {
         action();
         setStatus(done);
       } catch (error) {
-        console.warn(`${LOG_PREFIX} verdict map not changed`, { key: STORAGE_KEY, error, cause: error?.cause });
+        console.warn(`${LOG_PREFIX} verdict map not changed`, {
+          key: STORAGE_KEY,
+          error,
+          cause: error?.cause,
+        });
         setStatus(errorText(error));
       }
     }
     return h(
       "section",
-      { "aria-label": `${SETTINGS_TITLE} settings`, style: { display: "grid", gap: "var(--space-3)" } },
+      {
+        "aria-label": `${SETTINGS_TITLE} settings`,
+        style: { display: "grid", gap: "var(--space-3)" },
+      },
       h("h2", null, SETTINGS_TITLE),
       h("p", null, SETTINGS_HELP),
-      saved.error ? h("p", { role: "alert" }, `Saved map is invalid, so no reaction counts: ${saved.error}`) : null,
+      saved.error
+        ? h("p", { role: "alert" }, `Saved map is invalid, so no reaction counts: ${saved.error}`)
+        : null,
       h(
         "form",
         {

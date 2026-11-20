@@ -5,9 +5,6 @@
   "description": "React on an agent's message to send that agent your verdict: by default 👍 approve, 👎 reject, ❓ clarify, 💾 save learnings or 🔍 verify. Change the emoji and verdicts in Settings.",
   "discovery": {
     "category": "agent-tools",
-    "tags": [
-      "Approvals",
-      "Reactions"
-    ]
+    "tags": ["Approvals", "Reactions"]
   }
 }

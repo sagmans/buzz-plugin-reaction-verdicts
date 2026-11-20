@@ -11,6 +11,8 @@ agents rely on.
 | `plugin/manifest.json`, `plugin/plugin.js` | The plugin that Buzz installs, as is. No build step. |
 | `scripts/dogfood.mjs` | Runs the plugin with a fake Buzz host and checks every post, wake and skip. |
 | `scripts/check` | The repository checks; the git hooks call it. |
+| `biome.json` | Biome lint and format rules for JavaScript and JSON. |
+| `mise.toml` | Pinned tool releases for the repository checks. |
 | `scripts/setup-hooks`, `.githooks/` (except `*.d/`) | Generic hooks copied from a shared template. Do not edit them here. |
 | `.githooks/<hook>.d/` | This repository's hook steps. |
 
@@ -36,7 +38,7 @@ agents rely on.
 
 ## Before you commit
 
-1. Run `scripts/setup-hooks` once per clone.
+1. Run `mise install` and `scripts/setup-hooks` once per clone.
 2. Run `scripts/check` (offline steps) and fix every finding.
 3. For a behavior change, add or change a scenario in `scripts/dogfood.mjs`.
    With the default map, the posts and wakes must stay identical to the

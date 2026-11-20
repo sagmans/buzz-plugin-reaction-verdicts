@@ -10,7 +10,7 @@ set -euo pipefail
 . "${HOOK_HELPERS:?run from .githooks (scripts/setup-hooks)}"
 
 # Markdown is linted by the generic pre-commit check already.
-STEPS=(js shell personal-data dogfood)
+STEPS=(js biome shell personal-data dogfood)
 
 top=$(git rev-parse --show-toplevel)
 cd "$top"
